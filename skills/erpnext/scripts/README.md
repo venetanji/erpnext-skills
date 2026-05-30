@@ -29,12 +29,10 @@ Add one row per script when you contribute it. Keep it sorted.
 | Script | Reads | Writes | Idempotent | Purpose |
 |---|---|---|---|---|
 | [`_template.py`](_template.py) | — | — | — | Skeleton to copy; not a real script. |
+| [`export_audit_reports.py`](export_audit_reports.py) | Trial Balance, Balance Sheet, P&L, Accounts Receivable, General Ledger query reports | read-only (writes CSV files) | yes — re-running overwrites deterministically | Emit the standard year-end audit pack as CSV with currency precision applied at source, eliminating GL-running-balance float drift. |
+| [`health_check.py`](health_check.py) | Fiscal Year, Accounts Settings, Company, Currency Exchange Settings, Period Closing Voucher, Account Closing Balance, RQ queues | read-only | trivially | Pre-flight before bookkeeping/close work — surfaces open FYs, freeze-date config, FX-policy settings, scheduler status, broken ACB chains, and Draft transactions. |
 
-<!-- second-pass additions go here, e.g.:
-| `reconcile_party.py` | Payment Ledger Entry, GL Entry | Journal Entry | yes (pre-checks by party) | Diagnostic + FX-residual cleanup for one counterparty. |
--->
-
-## Candidates for the second pass
+## Candidates for the next pass
 
 Patterns worth turning into scripts (harvest from agent memories per CONTRIBUTING.md):
 
@@ -42,10 +40,12 @@ Patterns worth turning into scripts (harvest from agent memories per CONTRIBUTIN
   JSON, to learn a site's actual schema before automating against it.
 - **Idempotent upsert-by-business-key** — generic "insert unless a doc with this key exists"
   helper wrapping the Universal Hard Rule #3 pre-check.
-- **Report-to-CSV exporter** — run a Query Report via `frappe.desk.query_report.run` and
-  write CSV with currency precision applied at source (see the companion repo's
-  `export_audit_reports.py` for prior art).
 - **Safe cancel-and-amend** — cancel a submittable doc only after checking for downstream
   links, then create the amended sibling.
-- **Health check** — list open Fiscal Years, `acc_frozen_upto`, scheduler status, pending
-  jobs, and any docs stuck in Draft — a pre-flight an agent can run before bookkeeping work.
+- **Party FX-residual reconciler** — diagnose net base-currency vs FCY on a party-account
+  before clicking Payment Reconciliation (accounting.md Gotcha #10), and optionally book
+  the `voucher_type='Exchange Gain Or Loss'` cleanup JE for any base-currency residual left
+  after FCY nets to zero (accounting.md Gotcha #13).
+- **PCV ACB chain backfill** — generalised version of the ACB-only backfill described in
+  accounting.md Gotcha #9, walking submitted PCVs in chronological order, deleting any
+  existing ACB rows, and regenerating via `make_closing_entries`.

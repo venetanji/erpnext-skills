@@ -47,6 +47,16 @@ Material Request ─► RFQ ─► Supplier Quotation ─► Purchase Order ─�
    stock + SRBNB handling. A lingering SRBNB balance usually means a PR exists without its PI.
    (For drop-ship/advance-pay flows, booking the PI with `update_stock=1` avoids the SRBNB
    residual class entirely — see the companion `/ar-ap` skill.)
+
+   **SRBNB is not a stock account.** Its `account_type` is `"Stock Received But Not Billed"`
+   (`root_type=Liability`), distinct from `account_type="Stock"`. Only the latter is
+   protected by `validate_stock_accounts` / `StockAccountInvalidTransaction` in
+   `journal_entry.py` (the validator pulls account names via `get_stock_accounts`, which
+   filters strictly on `account_type=="Stock"`). **So direct Journal Entries to SRBNB are
+   allowed and are the standard way to clean up SRBNB residuals at year-end** — see the
+   gotcha list below for the failure modes that produce those residuals. Stock-In-Transit
+   and warehouse accounts (genuine `account_type="Stock"`) remain off-limits to JEs.
+
 3. **`maintain_same_rate`** rejects a PR/PI whose rate differs from the PO.
 4. **Supplier `on_hold`** blocks new POs/payments; check `hold_type` (All/Invoices/Payments)
    and `release_date`.
@@ -54,6 +64,28 @@ Material Request ─► RFQ ─► Supplier Quotation ─► Purchase Order ─�
    Quotation Comparison" report.
 6. **Returns are negative documents** (`is_return` + `return_against`), not edits — to
    reverse a receipt, create a return PR.
+7. **SRBNB residual failure modes beyond "PR without PI"** — each leaves a balance on
+   `Stock Received But Not Billed` after the cycle should have netted to zero.
+   1. **Return PI's `expense_account` not flipped from SRBNB.** *Symptom:* phantom Cr
+      balance on SRBNB after a credit-note PI. *Cause:* when amending a PI as a return
+      (`is_return=1`), each item line's `expense_account` defaults from the parent — if
+      the parent targeted SRBNB, the reversed sign credits SRBNB instead of the right
+      expense/asset account. *Fix on submit:* manually change `expense_account` per line to
+      Stock In Hand (reversing a stocked PR), COGS (reducing cost of already-sold
+      drop-shipped goods), or Stock Adjustment (write-off). *Fix retroactively:* corrective
+      JE Dr SRBNB / Cr [right account].
+   2. **PI without matching PR (drop-ship pattern).** *Symptom:* orphan Dr on SRBNB.
+      *Cause:* PI booked with `update_stock=0` and `expense_account=SRBNB`, but goods
+      drop-shipped directly supplier → customer with no PR ever issued. Nothing clears the
+      SRBNB leg. *Fix:* corrective JE Dr COGS / Cr SRBNB at the PI's posting date — goods
+      are already at the customer; revenue was booked via a Sales Invoice with
+      `update_stock=0`, so the cost belongs in COGS, not Stock In Transit.
+   3. **FX rate mismatch between PI and PR for the same FCY amount.** *Symptom:* SRBNB
+      carries a non-zero base-currency residual after PR/PI both submit at zero FCY net.
+      *Cause:* PR booked at rate X (goods-received date), PI booked at rate Y (bill date)
+      — SRBNB captures the rate-difference base-currency spread instead of it flowing to
+      Exchange G/L. *Fix:* JE rolls the residual from SRBNB to `Exchange Gain/Loss` (no
+      FCY impact).
 
 ## Key reports
 

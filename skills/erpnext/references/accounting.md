@@ -54,8 +54,21 @@ ledger stays balanced. To fix something, cancel/amend the source voucher.
   (`base_*`). GL Entry stores both base `debit`/`credit` and `*_in_account_currency`.
 - Payment Entry uses `source_exchange_rate` + `target_exchange_rate`; FX gain/loss auto-books
   to the Exchange Gain/Loss account.
-- Currency Exchange records + Accounts Settings ("Allow Stale Exchange Rates") govern rate
-  defaulting (falls back to frankfurter.dev auto-fetch if enabled).
+- Rate resolution (`erpnext.setup.utils.get_exchange_rate`): (1) look up a `Currency
+  Exchange` row for the pair + date within `stale_days` (default 1; bypassed by
+  `Accounts Settings.allow_stale=1`); (2) fall back to the on-demand fetcher
+  (`Currency Exchange Settings`, default service provider `frankfurter.dev`); (3) optional
+  pegged-currency table if `allow_pegged_currencies_exchange_rates=1`. The fetched rate is
+  cached ~6h in Redis but is **not** persisted to `Currency Exchange` — that table is a
+  pure manual-override store.
+- **No scheduled job pre-populates `Currency Exchange`.** Hooks `auto_create_exchange_rate_
+  revaluation_{daily,weekly,monthly}` create *Exchange Rate Revaluation* JEs, not rate rows.
+  If you need a documented year-end rate for an auditor, insert the `Currency Exchange`
+  row yourself.
+- `Journal Entry.voucher_type='Exchange Gain Or Loss'` is the only voucher type that
+  permits an FCY-account line with base-currency-only movement (zero in account currency) — needed
+  to clear base-currency residuals left by mismatched-rate JE pairs. Plain `Journal Entry` fails
+  validation ("Both Debit and Credit values cannot be zero").
 
 ## Transaction flow
 
@@ -78,9 +91,13 @@ tables. Status (Paid/Unpaid/Overdue/Partly Paid) derives from `outstanding_amoun
 1. **Never write GL Entry directly** — auto-generated on submit, reversed on cancel. To
    change a posted amount, cancel + amend the source voucher.
 2. **Submit, don't just save** — a Draft invoice posts *nothing*.
-3. **Frozen / closed periods** — if `acc_frozen_upto` is set, postings on/before that date
-   are blocked unless your role matches `frozen_accounts_modifier`. Posting outside any open
-   FY fails.
+3. **Frozen / closed periods** — postings on/before the freeze date are blocked unless the
+   caller's role matches the configured "modifier" role. Posting outside any open FY fails.
+   *Location varies by version:* on **v14–v15** these live on `Accounts Settings` as
+   `acc_frozen_upto` + `frozen_accounts_modifier`; on **v16** they moved to per-Company
+   fields `Company.accounts_frozen_till_date` + `Company.role_allowed_for_frozen_entries`
+   (`erpnext.accounts.general_ledger.validate_accounts_frozen`). Check both before
+   backdating.
 4. **Receivable/Payable legs require a party** — any GL leg on a Receivable/Payable-type
    account must carry `party_type`+`party`, or submit fails.
 5. **Cancel cascades** — can't cancel an invoice with linked submitted PEs/returns without
@@ -89,6 +106,57 @@ tables. Status (Paid/Unpaid/Overdue/Partly Paid) derives from `outstanding_amoun
    stock/COGS GL + Stock Ledger Entries) — relevant when an invoice unexpectedly moves stock.
 7. **`is_cancelled` on GL queries** — cancelled vouchers flip `is_cancelled=1` on the GL but
    keep the doc; always filter.
+8. **`Company.reporting_currency` blank ⇒ misleading "Unable to find exchange rate for
+   {base} to None" error** on every GL Entry validate. *Symptom:* posting any voucher
+   throws an FX error citing `None` as the target currency. *Fix:* on Company master, not on
+   `Currency Exchange` — set `reporting_currency` to the company's `default_currency`.
+9. **Broken Account Closing Balance chain ⇒ wrong Balance Sheet opening.** From v14+, the
+   Balance Sheet report reads `tabAccount Closing Balance` (ACB) rows produced by each
+   submitted Period Closing Voucher, summing per-year activity across all prior PCVs. PCVs
+   submitted on older versions (pre-ACB) leave no rows. *Symptom:* BS opening for a year
+   diverges from `SUM(debit-credit)` over GL Entry at the same date, on accounts the GL/TB
+   report as fine. *Diagnostic:* `SELECT period_closing_voucher, COUNT(*) FROM \`tabAccount
+   Closing Balance\` GROUP BY 1` — older PCVs with zero rows indicate a broken chain.
+   *Fix:* ACB-only backfill in chronological order via `make_closing_entries` (no PCV
+   cancellation, no GL touched). The most recent PCV's ACB must be deleted and regenerated
+   last so it folds in the now-backfilled prior chain.
+10. **Payment Reconciliation can manufacture a phantom JE on an already-balanced FCY
+    account.** *Symptom:* a party's FCY account is net 0 in both base and account currency,
+    but PR still surfaces lingering allocation rows (often from `-1`/`-2` amendment chains).
+    Clicking Reconcile on rows with non-zero Difference Amount posts a new JE with the FX
+    spread on Exchange G/L — and an offsetting leg on the FCY party-account at base-currency-only
+    (zero in account currency), creating an imbalance on a previously clean account. *Fix:*
+    diagnostic SQL first — `SELECT SUM(debit-credit) net_base, SUM(debit_in_account_currency-
+    credit_in_account_currency) net_ccy FROM \`tabGL Entry\` WHERE account=… AND party=…
+    AND is_cancelled=0`. If both are zero, don't reconcile. If you already posted a phantom
+    JE, cancel it.
+11. **PR's default "Difference Posting Date" backdates into closed FYs.** *Symptom:*
+    reconciling old payment JEs (booked at historical rates) against invoices silently posts
+    Exchange G/L into a closed/audited fiscal year, breaking the signed accounts. *Fix:*
+    per-row override the `gain_loss_posting_date` to a date in the current open FY (the
+    pencil-edit icon on rows with non-zero Difference Amount); make sure a `Currency
+    Exchange` row exists for that date + pair before reconciling.
+12. **Self-referential Payment Ledger Entry rows from manual FX-narration JEs.** *Symptom:*
+    PR keeps surfacing the same party row even after every invoice nets zero. *Cause:*
+    JEs that "narrate" credit-note application by booking two FCY legs at different rates
+    on the same party-account (net zero in account currency, base-currency spread absorbed in an
+    Exchange G/L leg in the same voucher) generate PLE rows with `voucher_no =
+    against_voucher_no`. *Diagnostic SQL:* `SELECT voucher_no, against_voucher_no, party,
+    amount_in_account_currency, amount FROM \`tabPayment Ledger Entry\` WHERE voucher_no =
+    against_voucher_no AND delinked = 0`. *Fix:* if both `SUM(amount)` and
+    `SUM(amount_in_account_currency)` on those rows are zero, delink them with `UPDATE
+    \`tabPayment Ledger Entry\` SET delinked = 1 WHERE …`. No GL impact (the underlying
+    JE is unchanged); only the sub-ledger noise disappears. **Do not delink** if the net
+    is non-zero — those represent real outstanding.
+13. **FX residual after JE-based AP cleanup at mismatched rates.** *Symptom:* after a
+    one-shot JE clears a party in account currency, the FCY Creditors account shows net 0
+    FCY but non-zero in base currency. *Cause:* two FCY legs at different historical
+    exchange rates whose base-currency delta wasn't routed to Exchange G/L explicitly.
+    *Fix:* post a follow-up JE with `voucher_type='Exchange Gain Or Loss'` +
+    `multi_currency=1`, charging the base-currency residual against `Exchange Gain/Loss`
+    and offsetting on the FCY party-account at base-currency-only/zero FCY. Plain Journal
+    Entry refuses (`Both Debit and Credit values cannot be zero`); the
+    Exchange-Gain-Or-Loss voucher_type bypasses that check.
 
 ## Key reports
 
