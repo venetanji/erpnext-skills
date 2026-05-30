@@ -29,10 +29,8 @@ Add one row per script when you contribute it. Keep it sorted.
 | Script | Reads | Writes | Idempotent | Purpose |
 |---|---|---|---|---|
 | [`_template.py`](_template.py) | — | — | — | Skeleton to copy; not a real script. |
-
-<!-- second-pass additions go here, e.g.:
-| `reconcile_party.py` | Payment Ledger Entry, GL Entry | Journal Entry | yes (pre-checks by party) | Diagnostic + FX-residual cleanup for one counterparty. |
--->
+| [`bank_reconciliation_diagnostic.py`](bank_reconciliation_diagnostic.py) | GL Entry, Bank Transaction, Bank Transaction Payments | read-only | yes (read-only) | For a bank account + date range: feed close vs GL close, and list the *orphan vouchers* (post to the bank but reconcile to no feed line) that equal the gap. |
+| [`cancel_and_amend_je.py`](cancel_and_amend_je.py) | Journal Entry, Bank Transaction(+Payments) | Journal Entry, Bank Transaction | yes (skips if marker exists) | Safe cancel + amended re-create of a JE — unreconciles/re-links its Bank Transactions, keeps the FCY rate via `ignore_exchange_rate`, dry-run by default. |
 
 ## Candidates for the second pass
 
@@ -45,7 +43,13 @@ Patterns worth turning into scripts (harvest from agent memories per CONTRIBUTIN
 - **Report-to-CSV exporter** — run a Query Report via `frappe.desk.query_report.run` and
   write CSV with currency precision applied at source (see the companion repo's
   `export_audit_reports.py` for prior art).
-- **Safe cancel-and-amend** — cancel a submittable doc only after checking for downstream
-  links, then create the amended sibling.
+- ~~**Safe cancel-and-amend**~~ — done: [`cancel_and_amend_je.py`](cancel_and_amend_je.py)
+  (Journal Entry; generalize to other submittables as a follow-up).
 - **Health check** — list open Fiscal Years, `acc_frozen_upto`, scheduler status, pending
   jobs, and any docs stuck in Draft — a pre-flight an agent can run before bookkeeping work.
+- **Bank-feed reconstruction** — bulk-import statement rows as Bank Transactions, then
+  reconcile oldest-first; pair with [`bank_reconciliation_diagnostic.py`](bank_reconciliation_diagnostic.py)
+  to catch orphan vouchers after each pass. (See the companion repo's clean-rebuild runbook.)
+- **Catch-up depreciation** — create back-dated/existing Assets (`is_existing_asset`,
+  `opening_accumulated_depreciation`) then `post_depreciation_entries("<date>")` to book all
+  schedule rows whose date is already past.

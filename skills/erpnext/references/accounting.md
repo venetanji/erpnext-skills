@@ -89,6 +89,30 @@ tables. Status (Paid/Unpaid/Overdue/Partly Paid) derives from `outstanding_amoun
    stock/COGS GL + Stock Ledger Entries) — relevant when an invoice unexpectedly moves stock.
 7. **`is_cancelled` on GL queries** — cancelled vouchers flip `is_cancelled=1` on the GL but
    keep the doc; always filter.
+8. **Multi-currency JE — `exchange_rate == 1` is treated as "unset" and refetched.** *Symptom:*
+   a JE touching a foreign-currency account you want booked **at par** (a near-dormant FCY
+   bank, or a pegged currency) fails *"Total Debit must be equal to Total Credit. The difference
+   is `<amount × (rate−1)>`"* on `insert` **even though you set `exchange_rate=1`**.
+   `JournalEntry.set_exchange_rate()` refetches the system rate when the line rate is falsy
+   **or `== 1`** (`accounts/doctype/journal_entry/journal_entry.py`). *Fix:* set
+   `doc.flags.ignore_exchange_rate = True` before `insert()`, keep `exchange_rate=1` on the FCY
+   line, and pass **only** `debit_in_account_currency`/`credit_in_account_currency` (never the
+   base `debit`/`credit`, or ERPNext recomputes the base at the fetched rate). v14–v16.
+9. **Bank Transaction reconciles via its child table after submit** — it allows
+   `update_after_submit`. *Reconcile:* append a row to `payment_entries`
+   (`payment_document`, `payment_entry`, `allocated_amount`) and `.save()`. *Unreconcile:*
+   remove that row and `.save()` (the `before_update_after_submit` hook recomputes
+   `allocated_amount` / `unallocated_amount` / `status`). No need to cancel the BT — handy when
+   swapping which voucher a feed line matches.
+10. **Importing a Bank Transaction is staging, not posting** — it does **not** move the GL; the
+    GL only changes when you reconcile the BT to a Payment Entry / JE. A bank account whose feed
+    ties to the statement but whose **GL is higher** = *orphan vouchers* posting to that account
+    that aren't in any `Bank Transaction Payments` row (find them with
+    `scripts/bank_reconciliation_diagnostic.py`).
+11. **An Account with cancelled GL entries can't be deleted.** *Symptom:*
+    `delete_doc("Account", …)` → *"Account with existing transaction can not be deleted"* even
+    after you cancelled the only voucher that used it — cancelled `GL Entry` rows persist. *Fix:*
+    rename it (`ZZ-UNUSED …`) or purge `is_cancelled=1` rows first; don't fight the delete.
 
 ## Key reports
 
