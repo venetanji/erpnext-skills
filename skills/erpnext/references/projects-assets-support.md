@@ -90,6 +90,19 @@ Purchase Invoice / Receipt (item is_fixed_asset=1, or "Create Asset")
    missing it blocks disposal.
 5. **`available_for_use_date` drives everything** — back-dated assets may post catch-up
    depreciation immediately on submit.
+6. **Migrating mid-life / historical assets** — set `is_existing_asset=1` (so submit does **not**
+   re-post the purchase cost — it's already in the GL), plus `opening_accumulated_depreciation`
+   and `opening_number_of_booked_depreciations` (Asset-level) and
+   `total_number_of_booked_depreciations` (per Finance Book row). `net_purchase_amount` is a
+   **mandatory** field even when `gross_purchase_amount` is set. A Finance Book row (method /
+   `frequency_of_depreciation` / `total_number_of_depreciations` / `depreciation_start_date`)
+   must exist on the Asset or be inherited from the Asset Category.
+7. **Submitting builds the schedule but doesn't post past rows in console/scripted creation** —
+   to book depreciation whose `schedule_date` is already in the past (a catch-up reconstruction),
+   call `erpnext.assets.doctype.asset.depreciation.post_depreciation_entries("<date>")` once;
+   it posts every due row up to `<date>` across all assets (one Depreciation Entry JE each).
+   First-year amounts are pro-rated from `available_for_use_date` (matches straight-line
+   schedules with a partial first period).
 
 ---
 

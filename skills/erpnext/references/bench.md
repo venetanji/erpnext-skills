@@ -445,6 +445,20 @@ scheduler_events = {
 8. **`--site` placement** must be **before** the subcommand: `bench --site x migrate`.
 9. **Run from the bench root** (`cd /home/frappe/frappe-bench`).
 10. **`--site all` fans out to every tenant** — double-check before `migrate`/`clear-cache --site all`.
+11. **An uncaught exception rolls back the *whole* `console`/script transaction.** *Symptom:*
+    the script printed success for the first N steps but **nothing persisted** because a later
+    line threw before `frappe.db.commit()`. The DB transaction is atomic to the process; partial
+    console output lies. → make every mutation script **idempotent** (re-runnable; pre-check by
+    business key) and **verify by querying GL/DB state**, not by trusting printed output.
+12. **`bench console` / `execute` run *inside* the backend container.** A host path like
+    `/tmp/foo.py` is invisible to it — *symptom:* `FileNotFoundError: /tmp/foo.py` from
+    `exec(open("/tmp/foo.py").read())`. → `docker cp foo.py <backend-container>:/tmp/` first, or
+    pipe the code via the heredoc/stdin pattern (§3). (Also: IPython blocks `open(0/1/2)` and can
+    swallow `print` inside loops — don't rely on console stdout for results.)
+13. **`TimestampMismatchError: <doc> has been modified after you have opened it`** — *symptom:*
+    you loaded a doc, then other ops (a child-table `.save()`, a linked-doc update) touched it,
+    then you `.cancel()`/`.save()` the **stale** copy. → reload fresh
+    (`frappe.get_doc(dt, name)`) immediately before the cancel/save.
 
 ---
 
