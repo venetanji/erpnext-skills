@@ -9,7 +9,7 @@ or Journal Entries that post to the bank account but are NOT linked to any
 line). The sum of the orphans equals the gap, exactly. Read-only.
 
 USAGE:    bench --site <site> execute erpnext.scripts.bank_reconciliation_diagnostic.run \\
-              --kwargs '{"account": "Bank - HSBC - {ABBR}", "from_date": "2017-04-01", "to_date": "2018-03-31", "opening": 77556.28}'
+              --kwargs '{"account": "<Bank GL Account> - {ABBR}", "from_date": "2024-04-01", "to_date": "2025-03-31", "opening": 0}'
     OR:   docker exec -i <backend-container> bench --site <site> execute path.to.run --kwargs '{...}'
 REQUIRES: frappe.init / bench env
 READS:    GL Entry, Bank Transaction, Bank Transaction Payments
@@ -24,7 +24,7 @@ import frappe
 def run(account: str, from_date: str, to_date: str, opening: float = None, **kwargs):
     """Reconcile a bank account's GL against its Bank Transaction feed and list orphans.
 
-    account  : the bank GL account name (e.g. "Bank - HSBC - {ABBR}").
+    account  : the bank GL account name (e.g. "<Bank GL Account> - {ABBR}").
     opening  : GL opening balance at from_date; if omitted it is computed from GL < from_date.
     """
     if opening is None:

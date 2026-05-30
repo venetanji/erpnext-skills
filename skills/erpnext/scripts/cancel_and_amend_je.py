@@ -12,7 +12,7 @@ Steps: (1) unreconcile any Bank Transactions linked to the JE (remove the child 
 (5) re-link the same Bank Transactions to the new JE.
 
 USAGE:    bench --site <site> execute erpnext.scripts.cancel_and_amend_je.run --kwargs \\
-              '{"je": "ACC-JV-2017-02060", "swap_accounts": [["Inter-Bank Clearing - {ABBR}", "Shareholder Loan - {ABBR}"]], "set_fields": {"user_remark": "amended: contra corrected"}, "dry_run": false}'
+              '{"je": "<JE-NAME>", "swap_accounts": [["<Wrong Account> - {ABBR}", "<Right Account> - {ABBR}"]], "set_fields": {"user_remark": "amended: contra corrected"}, "dry_run": false}'
 REQUIRES: frappe.init / bench env
 READS:    Journal Entry, Bank Transaction, Bank Transaction Payments
 WRITES:   Journal Entry (cancel + create), Bank Transaction (re-link)
